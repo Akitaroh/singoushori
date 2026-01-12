@@ -415,7 +415,11 @@
                 displayResults(data);
                 
             } catch (error) {
-                alert('エラーが発生しました: ' + error.message);
+                let msg = 'エラーが発生しました: ' + error.message;
+                if (error.detail) {
+                    msg += '\n\n詳細:\n' + error.detail;
+                }
+                alert(msg);
             } finally {
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('detectBtn').disabled = false;
