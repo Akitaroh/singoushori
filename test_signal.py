@@ -89,15 +89,17 @@ def test_basic_methods():
     
     # 8. 循環シフト相互相関 テスト
     print("\n--- Test 8: Circular Shift Correlation ---")
-    similarity, best_shift = detector.circular_shift_correlation(C_norm, C_norm)
+    similarity, best_shift, best_tempo = detector.circular_shift_correlation(C_norm, C_norm)
     print(f"[OK] Circular shift correlation computed")
     print(f"     Similarity length: {len(similarity)}")
     print(f"     Max similarity: {similarity.max():.4f} (expected: ~1.0 for same signal)")
-    print(f"     Best shift at max: {best_shift[np.argmax(similarity)]}")
+    if len(best_shift) > 0:
+        print(f"     Best shift at max: {best_shift[np.argmax(similarity)]}")
+        print(f"     Best tempo at max: {best_tempo[np.argmax(similarity)]:.2f}x")
     
     # 9. ピーク検出 テスト
     print("\n--- Test 9: Peak Detection ---")
-    peaks = detector.detect_peaks(similarity, threshold=0.5)
+    peaks = detector.detect_peaks(similarity, threshold=0.5, best_tempo=best_tempo, best_shift=best_shift)
     print(f"[OK] Peak detection completed")
     print(f"     Number of peaks found: {len(peaks)}")
     if peaks:
@@ -141,6 +143,7 @@ def test_with_audio_files(original_path, sample_path):
         return False
     
     print("\n--- Running detection ---")
+    print("Testing tempo ratios from 1.5x to 2.0x (step: 0.05x)...")
     try:
         result = detector.detect(original_path, sample_path, threshold=0.2)
         print(f"[OK] Detection completed!")
@@ -148,16 +151,21 @@ def test_with_audio_files(original_path, sample_path):
         print(f"Detected: {result['detected']}")
         print(f"Number of matches: {len(result['matches'])}")
         print(f"Pitch shift: {result['pitch_shift']} semitones")
+        print(f"Tempo ratio: {result['tempo_ratio']:.2f}x")
         
         if result['best_match']:
             print(f"\nBest match:")
             print(f"  Time: {result['best_match']['time']:.2f} sec")
-            print(f"  Similarity: {result['best_match']['similarity']:.4f}")
+            print(f"  Similarity: {result['best_match']['similarity']:.4f} ({result['best_match']['similarity']*100:.2f}%)")
+            print(f"  Tempo ratio: {result['best_match'].get('tempo_ratio', 1.0):.2f}x")
+            print(f"  Pitch shift: {result['best_match'].get('pitch_shift', 0)} semitones")
         
         if result['matches']:
-            print(f"\nAll matches:")
+            print(f"\nAll matches (top 20):")
             for i, match in enumerate(result['matches'], 1):
-                print(f"  {i}. Time: {match['time']:.2f}s, Similarity: {match['similarity']:.4f}")
+                tempo = match.get('tempo_ratio', 1.0)
+                pitch = match.get('pitch_shift', 0)
+                print(f"  {i:2d}. Time: {match['time']:6.2f}s, Similarity: {match['similarity']*100:5.2f}%, Tempo: {tempo:.2f}x, Pitch: {pitch:+d}")
         
         print(f"\nSimilarity curve stats:")
         curve = result['similarity_curve']

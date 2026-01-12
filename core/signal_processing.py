@@ -330,21 +330,58 @@ class SamplingDetector:
         # 実部のみを返す（虚部は数値誤差）
         return np.real(R_xy)
     
-    def circular_shift_correlation(self, Cx: np.ndarray, Cy: np.ndarray) -> tuple:
+    def resample_chroma(self, C: np.ndarray, tempo_ratio: float) -> np.ndarray:
         """
-        循環シフトを考慮した相互相関を計算し、ピッチシフトに対応する。
+        クロマ特徴量を時間方向にリサンプリングする（テンポ変更対応）。
+        
+        Parameters
+        ----------
+        C : np.ndarray
+            クロマ特徴量（shape: [12, frames]）
+        tempo_ratio : float
+            テンポ倍率（1.0 = 等速、2.0 = 2倍速）
+        
+        Returns
+        -------
+        np.ndarray
+            リサンプリングされたクロマ特徴量
+        """
+        if tempo_ratio == 1.0:
+            return C
+        
+        original_frames = C.shape[1]
+        # テンポが速くなる = フレーム数が減る
+        new_frames = int(original_frames / tempo_ratio)
+        
+        if new_frames < 1:
+            new_frames = 1
+        
+        # 線形補間でリサンプリング
+        original_indices = np.arange(original_frames)
+        new_indices = np.linspace(0, original_frames - 1, new_frames)
+        
+        C_resampled = np.zeros((12, new_frames))
+        for i in range(12):
+            C_resampled[i, :] = np.interp(new_indices, original_indices, C[i, :])
+        
+        return C_resampled
+    
+    def circular_shift_correlation(self, Cx: np.ndarray, Cy: np.ndarray, tempo_ratios: list = None) -> tuple:
+        """
+        循環シフトを考慮した相互相関を計算し、ピッチシフトとテンポ変更に対応する。
         
         スライディング窓方式でコサイン類似度を計算する。
         
         数式:
-        Similarity[τ] = max_{s=0}^{11} cos_sim(Cx[τ:τ+L], shift(Cy, s))
+        Similarity[τ] = max_{s=0}^{11} max_{r} cos_sim(Cx[τ:τ+L_r], shift(Cy_r, s))
         
         cos_sim(A, B) = (A · B) / (||A|| × ||B||)
         
         処理内容:
-        1. 原曲のクロマ特徴量に沿ってサンプルをスライド
-        2. 各位置で、12通りのピッチシフト（循環シフト）を試行
-        3. 各位置における最大類似度とそのときのシフト量を記録
+        1. 各テンポ倍率でサンプルをリサンプリング
+        2. 原曲のクロマ特徴量に沿ってサンプルをスライド
+        3. 各位置で、12通りのピッチシフト（循環シフト）を試行
+        4. 各位置における最大類似度とそのときのシフト量・テンポ倍率を記録
         
         Parameters
         ----------
@@ -352,74 +389,102 @@ class SamplingDetector:
             原曲のクロマ特徴量（shape: [12, frames_x]）
         Cy : np.ndarray
             対象区間のクロマ特徴量（shape: [12, frames_y]）
+        tempo_ratios : list
+            テスト対象のテンポ倍率のリスト（デフォルト: [1.0]）
         
         Returns
         -------
-        tuple[np.ndarray, np.ndarray]
-            similarity : 各時刻τにおける最大類似度（1次元配列、長さ = frames_x - frames_y + 1）
+        tuple[np.ndarray, np.ndarray, np.ndarray]
+            similarity : 各時刻τにおける最大類似度（1次元配列）
             best_shift : 各時刻τにおける最適シフト量（1次元配列）
+            best_tempo : 各時刻τにおける最適テンポ倍率（1次元配列）
         """
+        if tempo_ratios is None:
+            tempo_ratios = [1.0]
+        
         frames_x = Cx.shape[1]
-        frames_y = Cy.shape[1]
         
-        # サンプルが原曲より長い場合はエラー回避
-        if frames_y > frames_x:
-            # 空の結果を返す
-            return np.array([0.0]), np.array([0])
+        # 全テンポ倍率での結果を格納
+        all_results = []
         
-        # スライディング窓の数
-        num_positions = frames_x - frames_y + 1
-        
-        # 結果を格納する配列
-        similarity = np.zeros(num_positions)
-        best_shift = np.zeros(num_positions, dtype=int)
-        
-        # サンプルのL2ノルムを事前計算
-        norm_Cy = np.linalg.norm(Cy)
-        
-        # 各スライド位置について処理
-        for tau in range(num_positions):
-            # 原曲の対応する窓を抽出
-            window = Cx[:, tau:tau + frames_y]
-            norm_window = np.linalg.norm(window)
+        for tempo_ratio in tempo_ratios:
+            # サンプルをテンポ倍率でリサンプリング
+            Cy_resampled = self.resample_chroma(Cy, tempo_ratio)
+            frames_y = Cy_resampled.shape[1]
             
-            # ゼロ除算を回避
-            if norm_window < 1e-10 or norm_Cy < 1e-10:
-                similarity[tau] = 0.0
-                best_shift[tau] = 0
+            # サンプルが原曲より長い場合はスキップ
+            if frames_y > frames_x:
                 continue
             
-            # 12通りのピッチシフトで最大類似度を探索
-            max_sim = -1.0
-            max_shift = 0
+            # スライディング窓の数
+            num_positions = frames_x - frames_y + 1
             
-            for s in range(12):
-                # Cyを音階方向にsだけ循環シフト
-                # Cy_shifted[p] = Cy[(p+s) mod 12]
-                Cy_shifted = np.roll(Cy, shift=s, axis=0)
-                
-                # コサイン類似度を計算
-                # cos_sim = (A · B) / (||A|| × ||B||)
-                dot_product = np.sum(window * Cy_shifted)
-                cos_sim = dot_product / (norm_window * norm_Cy)
-                
-                if cos_sim > max_sim:
-                    max_sim = cos_sim
-                    max_shift = s
+            # サンプルのL2ノルムを事前計算
+            norm_Cy = np.linalg.norm(Cy_resampled)
             
-            similarity[tau] = max_sim
-            best_shift[tau] = max_shift
+            # 各スライド位置について処理
+            for tau in range(num_positions):
+                # 原曲の対応する窓を抽出
+                window = Cx[:, tau:tau + frames_y]
+                norm_window = np.linalg.norm(window)
+                
+                # ゼロ除算を回避
+                if norm_window < 1e-10 or norm_Cy < 1e-10:
+                    continue
+                
+                # 12通りのピッチシフトで最大類似度を探索
+                max_sim = -1.0
+                max_shift = 0
+                
+                for s in range(12):
+                    # Cyを音階方向にsだけ循環シフト
+                    Cy_shifted = np.roll(Cy_resampled, shift=s, axis=0)
+                    
+                    # コサイン類似度を計算
+                    dot_product = np.sum(window * Cy_shifted)
+                    cos_sim = dot_product / (norm_window * norm_Cy)
+                    
+                    if cos_sim > max_sim:
+                        max_sim = cos_sim
+                        max_shift = s
+                
+                all_results.append({
+                    'tau': tau,
+                    'similarity': max_sim,
+                    'shift': max_shift,
+                    'tempo_ratio': tempo_ratio
+                })
         
-        return similarity, best_shift
+        # 結果がない場合
+        if not all_results:
+            return np.array([0.0]), np.array([0]), np.array([1.0])
+        
+        # 全位置での最大類似度を持つ結果を構築
+        # tau毎に最も良い結果を選択
+        tau_best = {}
+        for r in all_results:
+            tau = r['tau']
+            if tau not in tau_best or r['similarity'] > tau_best[tau]['similarity']:
+                tau_best[tau] = r
+        
+        # ソートして配列に変換
+        sorted_taus = sorted(tau_best.keys())
+        similarity = np.array([tau_best[t]['similarity'] for t in sorted_taus])
+        best_shift = np.array([tau_best[t]['shift'] for t in sorted_taus])
+        best_tempo = np.array([tau_best[t]['tempo_ratio'] for t in sorted_taus])
+        
+        return similarity, best_shift, best_tempo
     
-    def detect_peaks(self, similarity: np.ndarray, threshold: float = 0.7) -> list:
+    def detect_peaks(self, similarity: np.ndarray, threshold: float = 0.7, 
+                      best_tempo: np.ndarray = None, best_shift: np.ndarray = None,
+                      top_n: int = 20) -> list:
         """
         類似度曲線からピークを検出する。
         
         処理内容:
         1. 閾値以上の類似度を持つ点を抽出
         2. 極大点（前後より値が大きい点）を検出
-        3. 上位N件（デフォルト5件）を返す
+        3. 上位N件（デフォルト20件）を返す
         
         Parameters
         ----------
@@ -427,12 +492,18 @@ class SamplingDetector:
             類似度配列
         threshold : float
             検出閾値（デフォルト: 0.7）
+        best_tempo : np.ndarray
+            各位置での最適テンポ倍率（オプション）
+        best_shift : np.ndarray
+            各位置での最適ピッチシフト（オプション）
+        top_n : int
+            返す件数（デフォルト: 20）
         
         Returns
         -------
         list[dict]
             検出結果のリスト
-            各要素は {"frame": int, "time": float, "similarity": float}
+            各要素は {"frame": int, "time": float, "similarity": float, "tempo_ratio": float, "pitch_shift": int}
         """
         peaks = []
         
@@ -445,48 +516,82 @@ class SamplingDetector:
                     # time = frame * hop_length / sr
                     time = i * self.hop_length / self.sr
                     
-                    peaks.append({
+                    peak_data = {
                         "frame": i,
                         "time": time,
                         "similarity": float(similarity[i])
-                    })
+                    }
+                    
+                    # テンポ倍率を追加
+                    if best_tempo is not None and i < len(best_tempo):
+                        peak_data["tempo_ratio"] = float(best_tempo[i])
+                    else:
+                        peak_data["tempo_ratio"] = 1.0
+                    
+                    # ピッチシフトを追加
+                    if best_shift is not None and i < len(best_shift):
+                        peak_data["pitch_shift"] = int(best_shift[i])
+                    else:
+                        peak_data["pitch_shift"] = 0
+                    
+                    peaks.append(peak_data)
         
         # 端点もチェック（最初と最後）
         if len(similarity) > 0:
             # 最初の点
             if similarity[0] >= threshold:
                 if len(similarity) == 1 or similarity[0] > similarity[1]:
-                    peaks.append({
+                    peak_data = {
                         "frame": 0,
                         "time": 0.0,
                         "similarity": float(similarity[0])
-                    })
+                    }
+                    if best_tempo is not None and len(best_tempo) > 0:
+                        peak_data["tempo_ratio"] = float(best_tempo[0])
+                    else:
+                        peak_data["tempo_ratio"] = 1.0
+                    if best_shift is not None and len(best_shift) > 0:
+                        peak_data["pitch_shift"] = int(best_shift[0])
+                    else:
+                        peak_data["pitch_shift"] = 0
+                    peaks.append(peak_data)
             
             # 最後の点
             if len(similarity) > 1 and similarity[-1] >= threshold:
                 if similarity[-1] > similarity[-2]:
                     time = (len(similarity) - 1) * self.hop_length / self.sr
-                    peaks.append({
+                    peak_data = {
                         "frame": len(similarity) - 1,
                         "time": time,
                         "similarity": float(similarity[-1])
-                    })
+                    }
+                    if best_tempo is not None and len(best_tempo) > 0:
+                        peak_data["tempo_ratio"] = float(best_tempo[-1])
+                    else:
+                        peak_data["tempo_ratio"] = 1.0
+                    if best_shift is not None and len(best_shift) > 0:
+                        peak_data["pitch_shift"] = int(best_shift[-1])
+                    else:
+                        peak_data["pitch_shift"] = 0
+                    peaks.append(peak_data)
         
-        # 類似度の高い順にソートして上位5件を返す
+        # 類似度の高い順にソートして上位N件を返す
         peaks.sort(key=lambda x: x["similarity"], reverse=True)
         
-        return peaks[:5]
+        return peaks[:top_n]
     
-    def detect(self, original_path: str, sample_path: str, threshold: float = 0.7) -> dict:
+    def detect(self, original_path: str, sample_path: str, threshold: float = 0.7,
+                tempo_range: tuple = (1.5, 2.0), tempo_step: float = 0.05) -> dict:
         """
         メインの検出メソッド。全処理を統合して実行する。
+        テンポ変更（1倍〜3倍）にも対応。
         
         処理フロー:
         1. 原曲と対象区間を読み込み（load_audio）
         2. 両方にSTFTを適用（stft）
         3. パワースペクトログラムを計算（power_spectrogram）
         4. クロマ特徴量を抽出・正規化（compute_chroma, normalize_chroma）
-        5. 循環相互相関を計算（circular_shift_correlation）
+        5. 複数テンポ倍率で循環相互相関を計算（circular_shift_correlation）
         6. ピーク検出（detect_peaks）
         7. 結果を返す
         
@@ -498,15 +603,20 @@ class SamplingDetector:
             対象区間のファイルパス
         threshold : float
             検出閾値（デフォルト: 0.7）
+        tempo_range : tuple
+            テンポ倍率の範囲（デフォルト: (1.5, 2.0)）
+        tempo_step : float
+            テンポ倍率の刻み幅（デフォルト: 0.05）
         
         Returns
         -------
         dict
             {
                 "detected": bool,           # サンプリングが検出されたか
-                "matches": list[dict],      # 検出結果リスト
+                "matches": list[dict],      # 検出結果リスト（各要素にtempo_ratio含む）
                 "best_match": dict | None,  # 最も類似度の高いマッチ
                 "pitch_shift": int,         # 推定ピッチシフト量（半音単位）
+                "tempo_ratio": float,       # 推定テンポ倍率
                 "similarity_curve": np.ndarray  # 類似度曲線（可視化用）
             }
         """
@@ -529,28 +639,35 @@ class SamplingDetector:
         C_original_norm = self.normalize_chroma(C_original)
         C_sample_norm = self.normalize_chroma(C_sample)
         
-        # 5. 循環相互相関を計算
-        similarity, best_shift = self.circular_shift_correlation(
-            C_original_norm, C_sample_norm
+        # 5. テンポ倍率のリストを生成（指定範囲を指定刻みで）
+        num_steps = int((tempo_range[1] - tempo_range[0]) / tempo_step) + 1
+        tempo_ratios = list(np.linspace(tempo_range[0], tempo_range[1], num_steps))
+        
+        # 循環相互相関を計算（複数テンポ対応）
+        similarity, best_shift, best_tempo = self.circular_shift_correlation(
+            C_original_norm, C_sample_norm, tempo_ratios
         )
         
-        # 6. ピーク検出
-        matches = self.detect_peaks(similarity, threshold)
+        # 6. ピーク検出（テンポ・ピッチ情報付き、上位20件）
+        matches = self.detect_peaks(similarity, threshold, best_tempo, best_shift, top_n=20)
         
         # 7. 結果を構築
         detected = len(matches) > 0
         best_match = matches[0] if detected else None
         
-        # 最も高い類似度を持つ位置でのピッチシフト量を取得
+        # 最も高い類似度を持つ位置での情報を取得
         if best_match is not None:
-            pitch_shift = int(best_shift[best_match["frame"]])
+            pitch_shift = best_match.get("pitch_shift", 0)
+            tempo_ratio = best_match.get("tempo_ratio", 1.0)
         else:
             pitch_shift = 0
+            tempo_ratio = 1.0
         
         return {
             "detected": detected,
             "matches": matches,
             "best_match": best_match,
             "pitch_shift": pitch_shift,
+            "tempo_ratio": tempo_ratio,
             "similarity_curve": similarity
         }
