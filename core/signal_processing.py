@@ -269,7 +269,7 @@ class SamplingDetector:
         
         return p
     
-    def compute_chroma(self, P: np.ndarray) -> np.ndarray:
+    def compute_chroma(self, P: np.ndarray, freq_min: float = 80.0, freq_max: float = 4000.0) -> np.ndarray:
         """
         パワースペクトログラムからクロマ特徴量を計算する。
         
@@ -277,14 +277,22 @@ class SamplingDetector:
         C[m, p] = Σ_{k ∈ K_p} P[m, k]
         
         処理内容:
-        1. 各周波数ビンkに対応する周波数を計算: f_k = k * sr / n_fft
-        2. 各周波数を音階クラスに変換（hz_to_chromaを使用）
-        3. 同じ音階クラスに属する周波数ビンのパワーを合計
+        1. 正の周波数ビンのみ使用（k = 1 ~ n_fft//2）
+           ※ FFTの出力は対称なので、後半は負の周波数（ミラー）
+        2. 帯域制限（デフォルト: 80Hz〜4000Hz）
+           ※ DC成分や超低域・超高域のノイズを除外
+        3. 各周波数ビンkに対応する周波数を計算: f_k = k * sr / n_fft
+        4. 各周波数を音階クラスに変換（hz_to_chromaを使用）
+        5. 同じ音階クラスに属する周波数ビンのパワーを合計
         
         Parameters
         ----------
         P : np.ndarray
             パワースペクトログラム（shape: [周波数ビン数, フレーム数]）
+        freq_min : float
+            使用する最低周波数（デフォルト: 80Hz、音楽の基音域下限）
+        freq_max : float
+            使用する最高周波数（デフォルト: 4000Hz、倍音の主要帯域上限）
         
         Returns
         -------
@@ -296,11 +304,19 @@ class SamplingDetector:
         # クロマ特徴量を初期化（12音階クラス x フレーム数）
         C = np.zeros((12, num_frames))
         
-        # 各周波数ビンについて処理
-        for k in range(num_bins):
+        # 正の周波数ビンのみ使用（k = 1 ~ n_fft//2）
+        # k=0 は DC成分（0Hz）なのでスキップ
+        # k > n_fft//2 は負の周波数（FFTの対称性）なのでスキップ
+        max_bin = min(num_bins, self.n_fft // 2 + 1)
+        
+        for k in range(1, max_bin):  # k=0（DC）をスキップ
             # 周波数ビンkに対応する周波数を計算
             # f_k = k * sr / n_fft
             freq = k * self.sr / self.n_fft
+            
+            # 帯域制限：音楽のピッチに関係ない周波数をスキップ
+            if freq < freq_min or freq > freq_max:
+                continue
             
             # 周波数を音階クラスに変換
             chroma_class = self.hz_to_chroma(freq)
@@ -655,9 +671,13 @@ class SamplingDetector:
                     else:
                         peak_data["tempo_ratio"] = 1.0
                     
-                    # ピッチシフトを追加
+                    # ピッチシフトを追加（符号付き: -6〜+5 に変換）
                     if best_shift is not None and i < len(best_shift):
-                        peak_data["pitch_shift"] = int(best_shift[i])
+                        shift = int(best_shift[i])
+                        # 0-11 を -6〜+5 に変換（例: 10 → -2, 2 → +2）
+                        if shift > 6:
+                            shift = shift - 12
+                        peak_data["pitch_shift"] = shift
                     else:
                         peak_data["pitch_shift"] = 0
                     
@@ -678,7 +698,10 @@ class SamplingDetector:
                     else:
                         peak_data["tempo_ratio"] = 1.0
                     if best_shift is not None and len(best_shift) > 0:
-                        peak_data["pitch_shift"] = int(best_shift[0])
+                        shift = int(best_shift[0])
+                        if shift > 6:
+                            shift = shift - 12
+                        peak_data["pitch_shift"] = shift
                     else:
                         peak_data["pitch_shift"] = 0
                     peaks.append(peak_data)
@@ -697,7 +720,10 @@ class SamplingDetector:
                     else:
                         peak_data["tempo_ratio"] = 1.0
                     if best_shift is not None and len(best_shift) > 0:
-                        peak_data["pitch_shift"] = int(best_shift[-1])
+                        shift = int(best_shift[-1])
+                        if shift > 6:
+                            shift = shift - 12
+                        peak_data["pitch_shift"] = shift
                     else:
                         peak_data["pitch_shift"] = 0
                     peaks.append(peak_data)
@@ -785,6 +811,7 @@ class SamplingDetector:
         # 最も高い類似度を持つ位置での情報を取得
         if best_match is not None:
             pitch_shift = best_match.get("pitch_shift", 0)
+            # pitch_shiftは既にdetect_peaksで符号付きに変換済み
             tempo_ratio = best_match.get("tempo_ratio", 1.0)
         else:
             pitch_shift = 0
