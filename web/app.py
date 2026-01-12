@@ -7,9 +7,13 @@ import os
 import sys
 import tempfile
 import traceback
+import wave
 from flask import Flask, render_template, request, jsonify
 from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
 from werkzeug.utils import secure_filename
+
+# Render環境でlibrosa/numbaのJITコンパイルが重く、OOM/timeoutの原因になりやすいので無効化
+os.environ.setdefault('NUMBA_DISABLE_JIT', '1')
 
 # 親ディレクトリをパスに追加
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -40,6 +44,15 @@ def _allowed_extension(filename: str) -> bool:
     return ext in {'.wav'}
 
 
+def _wav_duration_seconds(path: str) -> float:
+    with wave.open(path, 'rb') as wf:
+        frames = wf.getnframes()
+        rate = wf.getframerate()
+        if rate <= 0:
+            return 0.0
+        return frames / float(rate)
+
+
 @app.route('/health')
 def health():
     """ヘルスチェック＋デバッグ情報"""
@@ -53,9 +66,11 @@ def health():
     
     return jsonify({
         'ok': True,
+        'python': sys.version,
         'numpy': np.__version__,
         'scipy': scipy.__version__,
         'librosa': librosa_version,
+        'numba_disable_jit': os.environ.get('NUMBA_DISABLE_JIT'),
         'upload_folder': app.config['UPLOAD_FOLDER'],
         'folder_exists': os.path.exists(app.config['UPLOAD_FOLDER'])
     })
@@ -127,6 +142,20 @@ def detect():
         total_size_mb = (original_size + sample_size) / (1024 * 1024)
         if total_size_mb > 10:
             return jsonify({'error': f'ファイルサイズが大きすぎます（合計{total_size_mb:.1f}MB）。10MB以内にしてください。短いWAVファイルを使用するか、サンプリングレートを下げてください。'}), 400
+
+        # 長さ制限（計算量が線形に増えるためRenderで落ちやすい）
+        # 目安: original<=60秒, sample<=20秒
+        try:
+            original_sec = _wav_duration_seconds(original_path)
+            sample_sec = _wav_duration_seconds(sample_path)
+        except Exception:
+            original_sec = None
+            sample_sec = None
+
+        if original_sec is not None and original_sec > 60:
+            return jsonify({'error': f'原曲WAVが長すぎます（{original_sec:.1f}秒）。Render版は60秒以内にしてください。'}), 400
+        if sample_sec is not None and sample_sec > 20:
+            return jsonify({'error': f'サンプルWAVが長すぎます（{sample_sec:.1f}秒）。Render版は20秒以内にしてください。'}), 400
         
         print(f"[detect] Processing files: original={original_size/1024:.1f}KB, sample={sample_size/1024:.1f}KB", file=sys.stderr)
 
@@ -168,10 +197,6 @@ def detect():
         
     finally:
         # 一時ファイル削除（例外時もクリーンアップ）
-        if original_path and os.path.exists(original_path):
-            os.remove(original_path)
-        if sample_path and os.path.exists(sample_path):
-            os.remove(sample_path)
         if original_path and os.path.exists(original_path):
             os.remove(original_path)
         if sample_path and os.path.exists(sample_path):
