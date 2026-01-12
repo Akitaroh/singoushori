@@ -405,11 +405,19 @@
                 }
 
                 if (!response.ok) {
-                    throw new Error(data && data.error ? data.error : `HTTP ${response.status}`);
+                    let errMsg = data && data.error ? data.error : `HTTP ${response.status}`;
+                    if (data && data.detail) {
+                        errMsg += '\n\n詳細:\n' + data.detail;
+                    }
+                    throw new Error(errMsg);
                 }
 
                 if (data.error) {
-                    throw new Error(data.error);
+                    let errMsg = data.error;
+                    if (data.detail) {
+                        errMsg += '\n\n詳細:\n' + data.detail;
+                    }
+                    throw new Error(errMsg);
                 }
 
                 displayResults(data);
