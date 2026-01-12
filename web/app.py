@@ -5,9 +5,10 @@ Flask + HTML/CSS/JavaScriptでローカルホスト
 
 import os
 import sys
-import json
 import tempfile
 from flask import Flask, render_template, request, jsonify
+from werkzeug.exceptions import HTTPException, RequestEntityTooLarge
+from werkzeug.utils import secure_filename
 
 # 親ディレクトリをパスに追加
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -24,6 +25,31 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 detector = SamplingDetector()
 
 
+def _allowed_extension(filename: str) -> bool:
+    # RenderなどのLinux環境ではmp3デコード（ffmpeg）が無いことが多く失敗しやすい。
+    # まずは確実に扱えるwavのみ許可（必要なら将来拡張）。
+    _, ext = os.path.splitext(filename.lower())
+    return ext in {'.wav'}
+
+
+@app.route('/health')
+def health():
+    return jsonify({'ok': True})
+
+
+@app.errorhandler(RequestEntityTooLarge)
+def handle_413(e):
+    return jsonify({'error': 'ファイルが大きすぎます（50MB以内にしてください）'}), 413
+
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    # HTTPException（404など）もJSONで返して、フロントでパースできるようにする
+    if isinstance(e, HTTPException):
+        return jsonify({'error': e.description}), e.code
+    return jsonify({'error': str(e)}), 500
+
+
 @app.route('/')
 def index():
     """メインページ"""
@@ -33,43 +59,47 @@ def index():
 @app.route('/detect', methods=['POST'])
 def detect():
     """サンプリング検出API"""
+    # ファイルの取得
+    if 'original' not in request.files or 'sample' not in request.files:
+        return jsonify({'error': 'ファイルが選択されていません'}), 400
+
+    original_file = request.files['original']
+    sample_file = request.files['sample']
+
+    if original_file.filename == '' or sample_file.filename == '':
+        return jsonify({'error': 'ファイルが選択されていません'}), 400
+
+    # 拡張子チェック（デプロイ環境の安定性優先）
+    if not _allowed_extension(original_file.filename) or not _allowed_extension(sample_file.filename):
+        return jsonify({'error': 'デプロイ版はWAVのみ対応です（mp3はサーバ側でデコードできない場合があります）。wavに変換して再試行してください。'}), 400
+
+    # パラメータの取得
+    threshold = float(request.form.get('threshold', 0.2))
+    tempo_min = float(request.form.get('tempo_min', 1.5))
+    tempo_max = float(request.form.get('tempo_max', 2.0))
+    tempo_step = float(request.form.get('tempo_step', 0.05))
+
+    original_path = None
+    sample_path = None
     try:
-        # ファイルの取得
-        if 'original' not in request.files or 'sample' not in request.files:
-            return jsonify({'error': 'ファイルが選択されていません'}), 400
-        
-        original_file = request.files['original']
-        sample_file = request.files['sample']
-        
-        if original_file.filename == '' or sample_file.filename == '':
-            return jsonify({'error': 'ファイルが選択されていません'}), 400
-        
-        # パラメータの取得
-        threshold = float(request.form.get('threshold', 0.2))
-        tempo_min = float(request.form.get('tempo_min', 1.5))
-        tempo_max = float(request.form.get('tempo_max', 2.0))
-        tempo_step = float(request.form.get('tempo_step', 0.05))
-        
-        # 一時ファイルとして保存
-        original_path = os.path.join(app.config['UPLOAD_FOLDER'], 'original_' + original_file.filename)
-        sample_path = os.path.join(app.config['UPLOAD_FOLDER'], 'sample_' + sample_file.filename)
-        
+        # 一時ファイルとして保存（ファイル名はサニタイズ）
+        original_name = secure_filename(original_file.filename)
+        sample_name = secure_filename(sample_file.filename)
+        original_path = os.path.join(app.config['UPLOAD_FOLDER'], f'original_{original_name}')
+        sample_path = os.path.join(app.config['UPLOAD_FOLDER'], f'sample_{sample_name}')
+
         original_file.save(original_path)
         sample_file.save(sample_path)
-        
+
         # 検出実行
         result = detector.detect(
-            original_path, 
-            sample_path, 
+            original_path,
+            sample_path,
             threshold=threshold,
             tempo_range=(tempo_min, tempo_max),
             tempo_step=tempo_step
         )
-        
-        # 一時ファイル削除
-        os.remove(original_path)
-        os.remove(sample_path)
-        
+
         # 結果を整形
         response = {
             'detected': result['detected'],
@@ -84,13 +114,14 @@ def detect():
                 'length': len(result['similarity_curve'])
             }
         }
-        
+
         return jsonify(response)
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+    finally:
+        # 一時ファイル削除（例外時もクリーンアップ）
+        if original_path and os.path.exists(original_path):
+            os.remove(original_path)
+        if sample_path and os.path.exists(sample_path):
+            os.remove(sample_path)
 
 
 if __name__ == '__main__':
