@@ -374,12 +374,7 @@
                 return;
             }
             
-            // ファイルサイズチェック（クライアント側で事前警告）
-            const totalSizeMB = (originalFile.size + sampleFile.size) / (1024 * 1024);
-            if (totalSizeMB > 50) {
-                alert(`ファイルサイズが大きすぎます（合計${totalSizeMB.toFixed(1)}MB）。\n50MB以内にしてください。`);
-                return;
-            }
+            // ローカル環境: ファイルサイズ制限なし
             
             const formData = new FormData();
             formData.append('original', originalFile);
