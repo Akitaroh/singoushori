@@ -474,8 +474,8 @@
                 </div>
             `;
             
-            // グラフ
-            drawChart(data.similarity_curve);
+            // グラフ（時間軸付き）
+            drawChart(data.similarity_curve, data.time_axis, data.original_duration, data.tempo_ratio);
             
             // マッチ一覧
             const tbody = document.getElementById('matches-body');
@@ -495,7 +495,7 @@
             document.getElementById('results').style.display = 'block';
         }
         
-        function drawChart(similarityCurve) {
+        function drawChart(similarityCurve, timeAxis, originalDuration, tempoRatio) {
             const ctx = document.getElementById('similarityChart').getContext('2d');
             
             if (chart) {
@@ -508,9 +508,14 @@
             const data = [];
             
             for (let i = 0; i < similarityCurve.length; i += step) {
-                labels.push((i * 512 / 22050).toFixed(1));  // フレーム→秒
+                // バックエンドから送られた正確な時間軸を使用
+                const timeInSec = timeAxis && timeAxis[i] !== undefined ? timeAxis[i] : (i * 0.016);
+                labels.push(timeInSec.toFixed(1));
                 data.push(similarityCurve[i] * 100);
             }
+            
+            // グラフタイトルにテンポ倍率と原曲の長さを表示
+            const titleText = `類似度曲線（テンポ ${tempoRatio.toFixed(2)}x、原曲 ${originalDuration.toFixed(1)}秒）`;
             
             chart = new Chart(ctx, {
                 type: 'line',
@@ -531,13 +536,19 @@
                     plugins: {
                         legend: {
                             labels: { color: '#fff' }
+                        },
+                        title: {
+                            display: true,
+                            text: titleText,
+                            color: '#fff',
+                            font: { size: 14 }
                         }
                     },
                     scales: {
                         x: {
                             title: {
                                 display: true,
-                                text: '時間 (秒)',
+                                text: '原曲内の位置 (秒)',
                                 color: '#fff'
                             },
                             ticks: { color: '#aaa' },

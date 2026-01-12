@@ -394,6 +394,69 @@ class SamplingDetector:
         # 実部のみを返す（虚部は数値誤差）
         return np.real(R_xy)
     
+    def _compute_single_tempo_curve(self, Cx: np.ndarray, Cy: np.ndarray, tempo_ratio: float) -> np.ndarray:
+        """
+        単一のテンポ倍率での類似度曲線を計算する。
+        X軸が原曲の時間軸に対応する曲線を返す。
+        
+        Parameters
+        ----------
+        Cx : np.ndarray
+            原曲のクロマ特徴量（shape: [12, frames_x]）
+        Cy : np.ndarray
+            サンプルのクロマ特徴量（shape: [12, frames_y]）
+        tempo_ratio : float
+            テンポ倍率
+        
+        Returns
+        -------
+        np.ndarray
+            類似度曲線（長さ = 原曲のフレーム数 - リサンプル後サンプルのフレーム数 + 1）
+        """
+        # サンプルをテンポ倍率でリサンプリング
+        Cy_resampled = self.resample_chroma(Cy, tempo_ratio)
+        frames_x = Cx.shape[1]
+        frames_y = Cy_resampled.shape[1]
+        
+        # サンプルが原曲より長い場合
+        if frames_y > frames_x:
+            return np.array([0.0])
+        
+        # スライディング窓の数
+        num_positions = frames_x - frames_y + 1
+        similarity = np.zeros(num_positions)
+        
+        # サンプルのL2ノルムを事前計算
+        norm_Cy = np.linalg.norm(Cy_resampled)
+        
+        # 各スライド位置について処理
+        for tau in range(num_positions):
+            # 原曲の対応する窓を抽出
+            window = Cx[:, tau:tau + frames_y]
+            norm_window = np.linalg.norm(window)
+            
+            # ゼロ除算を回避
+            if norm_window < 1e-10 or norm_Cy < 1e-10:
+                similarity[tau] = 0.0
+                continue
+            
+            # 12通りのピッチシフトで最大類似度を探索
+            max_sim = -1.0
+            for s in range(12):
+                # Cyを音階方向にsだけ循環シフト
+                Cy_shifted = np.roll(Cy_resampled, shift=s, axis=0)
+                
+                # コサイン類似度を計算
+                dot_product = np.sum(window * Cy_shifted)
+                cos_sim = dot_product / (norm_window * norm_Cy)
+                
+                if cos_sim > max_sim:
+                    max_sim = cos_sim
+            
+            similarity[tau] = max_sim
+        
+        return similarity
+    
     def resample_chroma(self, C: np.ndarray, tempo_ratio: float) -> np.ndarray:
         """
         クロマ特徴量を時間方向にリサンプリングする（テンポ変更対応）。
@@ -727,11 +790,27 @@ class SamplingDetector:
             pitch_shift = 0
             tempo_ratio = 1.0
         
+        # 原曲の長さ（秒）を計算
+        original_duration_sec = len(original_signal) / self.sr
+        
+        # 最良テンポ倍率での類似度曲線を再計算（X軸を原曲の長さに合わせる）
+        # 最良テンポでサンプルをリサンプリングし、スライド位置を原曲の時間軸に変換
+        best_tempo_similarity = self._compute_single_tempo_curve(
+            C_original_norm, C_sample_norm, tempo_ratio
+        )
+        
+        # 時間軸を計算（各位置τを原曲内の秒数に変換）
+        # τ番目の位置 = τ * hop_length / sr 秒
+        num_positions = len(best_tempo_similarity)
+        time_axis = np.array([i * self.hop_length / self.sr for i in range(num_positions)])
+        
         return {
             "detected": detected,
             "matches": matches,
             "best_match": best_match,
             "pitch_shift": pitch_shift,
             "tempo_ratio": tempo_ratio,
-            "similarity_curve": similarity
+            "similarity_curve": best_tempo_similarity,  # 最良テンポのみの曲線
+            "time_axis": time_axis,  # 秒単位の時間軸
+            "original_duration": original_duration_sec  # 原曲の長さ
         }

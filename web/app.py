@@ -176,6 +176,8 @@ def detect():
             'pitch_shift': result['pitch_shift'],
             'tempo_ratio': result['tempo_ratio'],
             'similarity_curve': result['similarity_curve'].tolist(),
+            'time_axis': result['time_axis'].tolist(),
+            'original_duration': result['original_duration'],
             'curve_stats': {
                 'max': float(result['similarity_curve'].max()),
                 'mean': float(result['similarity_curve'].mean()),
