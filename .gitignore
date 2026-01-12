@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Outputs
+similarity_curve.csv
+
+# Audio (avoid committing large/copyrighted files)
+*.mp3
+*.wav
