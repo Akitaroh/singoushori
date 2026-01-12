@@ -5,9 +5,68 @@
 大学の信号処理課題の評価対象ファイル。
 """
 
+import os
 import numpy as np
 from scipy.fft import fft, ifft
-import librosa
+from scipy.io import wavfile
+from scipy.signal import resample
+
+
+def _load_wav_scipy(file_path: str, target_sr: int) -> np.ndarray:
+    """
+    WAVファイルをscipy.io.wavfileで読み込む（librosa/numba依存を回避）。
+    
+    Parameters
+    ----------
+    file_path : str
+        WAVファイルのパス
+    target_sr : int
+        目標サンプリングレート
+    
+    Returns
+    -------
+    np.ndarray
+        モノラル化・正規化・リサンプリング済みの信号
+    """
+    sr_orig, data = wavfile.read(file_path)
+    
+    # int16/int32 → float64 に変換して正規化
+    if data.dtype == np.int16:
+        data = data.astype(np.float64) / 32768.0
+    elif data.dtype == np.int32:
+        data = data.astype(np.float64) / 2147483648.0
+    elif data.dtype == np.float32 or data.dtype == np.float64:
+        data = data.astype(np.float64)
+    else:
+        # uint8など
+        data = data.astype(np.float64) / 255.0 - 0.5
+    
+    # ステレオ → モノラル
+    if len(data.shape) == 2:
+        data = data.mean(axis=1)
+    
+    # リサンプリング
+    if sr_orig != target_sr:
+        num_samples = int(len(data) * target_sr / sr_orig)
+        data = resample(data, num_samples)
+    
+    # 正規化
+    max_val = np.max(np.abs(data))
+    if max_val > 0:
+        data = data / max_val
+    
+    return data
+
+
+# librosaはmp3等の読み込みに必要だが、Render等でnumba互換性問題がある場合はimportを遅延
+_librosa = None
+
+def _get_librosa():
+    global _librosa
+    if _librosa is None:
+        import librosa as lb
+        _librosa = lb
+    return _librosa
 
 
 class SamplingDetector:
@@ -53,17 +112,22 @@ class SamplingDetector:
         np.ndarray
             1次元の離散信号 x[n]
         """
-        # librosaで音声ファイルを読み込み
-        # mono=Trueでモノラル化、sr=self.srでリサンプリング
-        # librosaは自動的に[-1, 1]に正規化する
-        x, _ = librosa.load(file_path, sr=self.sr, mono=True)
+        _, ext = os.path.splitext(file_path.lower())
         
-        # 念のため正規化を確認（既にlibrosaで正規化されているが明示的に処理）
-        max_val = np.max(np.abs(x))
-        if max_val > 0:
-            x = x / max_val
-        
-        return x
+        if ext == '.wav':
+            # WAVはscipy.io.wavfileで読み込む（numba依存を回避）
+            return _load_wav_scipy(file_path, self.sr)
+        else:
+            # MP3等はlibrosaを使用（numbaが必要）
+            librosa = _get_librosa()
+            x, _ = librosa.load(file_path, sr=self.sr, mono=True)
+            
+            # 念のため正規化を確認
+            max_val = np.max(np.abs(x))
+            if max_val > 0:
+                x = x / max_val
+            
+            return x
     
     def hann_window(self, N: int) -> np.ndarray:
         """
