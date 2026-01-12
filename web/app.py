@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.signal_processing import SamplingDetector
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 最大50MB
+app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024 * 1024  # ローカル環境: 1GB（実質無制限）
 
 # アップロードフォルダ
 UPLOAD_FOLDER = tempfile.mkdtemp()
@@ -78,7 +78,7 @@ def health():
 
 @app.errorhandler(RequestEntityTooLarge)
 def handle_413(e):
-    return jsonify({'error': 'ファイルが大きすぎます（50MB以内にしてください）'}), 413
+    return jsonify({'error': 'ファイルが大きすぎます（1GB以内にしてください）'}), 413
 
 
 @app.errorhandler(Exception)
@@ -138,23 +138,7 @@ def detect():
         if original_size == 0 or sample_size == 0:
             return jsonify({'error': 'アップロードされたファイルが空です'}), 400
         
-        # 合計50MB以上は拒否
-        total_size_mb = (original_size + sample_size) / (1024 * 1024)
-        if total_size_mb > 50:
-            return jsonify({'error': f'ファイルサイズが大きすぎます（合計{total_size_mb:.1f}MB）。50MB以内にしてください。'}), 400
-
-        # 長さ制限（原曲5分、サンプル1分まで許可）
-        try:
-            original_sec = _wav_duration_seconds(original_path)
-            sample_sec = _wav_duration_seconds(sample_path)
-        except Exception:
-            original_sec = None
-            sample_sec = None
-
-        if original_sec is not None and original_sec > 300:
-            return jsonify({'error': f'原曲WAVが長すぎます（{original_sec:.1f}秒）。5分以内にしてください。'}), 400
-        if sample_sec is not None and sample_sec > 60:
-            return jsonify({'error': f'サンプルWAVが長すぎます（{sample_sec:.1f}秒）。1分以内にしてください。'}), 400
+        # ローカル環境: ファイルサイズ・長さ制限なし
         
         print(f"[detect] Processing files: original={original_size/1024:.1f}KB, sample={sample_size/1024:.1f}KB", file=sys.stderr)
 
