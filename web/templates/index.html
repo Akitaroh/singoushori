@@ -376,8 +376,8 @@
             
             // ファイルサイズチェック（クライアント側で事前警告）
             const totalSizeMB = (originalFile.size + sampleFile.size) / (1024 * 1024);
-            if (totalSizeMB > 10) {
-                alert(`ファイルサイズが大きすぎます（合計${totalSizeMB.toFixed(1)}MB）。\n10MB以内にしてください。\n\n短いWAVファイルを使用するか、サンプリングレートを下げてください。`);
+            if (totalSizeMB > 50) {
+                alert(`ファイルサイズが大きすぎます（合計${totalSizeMB.toFixed(1)}MB）。\n50MB以内にしてください。`);
                 return;
             }
             

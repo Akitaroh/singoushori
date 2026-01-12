@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.signal_processing import SamplingDetector
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 最大10MB（メモリ節約）
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 最大50MB
 
 # アップロードフォルダ
 UPLOAD_FOLDER = tempfile.mkdtemp()
@@ -138,13 +138,12 @@ def detect():
         if original_size == 0 or sample_size == 0:
             return jsonify({'error': 'アップロードされたファイルが空です'}), 400
         
-        # 合計10MB以上は拒否（Render無料枠のメモリ制限対策）
+        # 合計50MB以上は拒否
         total_size_mb = (original_size + sample_size) / (1024 * 1024)
-        if total_size_mb > 10:
-            return jsonify({'error': f'ファイルサイズが大きすぎます（合計{total_size_mb:.1f}MB）。10MB以内にしてください。短いWAVファイルを使用するか、サンプリングレートを下げてください。'}), 400
+        if total_size_mb > 50:
+            return jsonify({'error': f'ファイルサイズが大きすぎます（合計{total_size_mb:.1f}MB）。50MB以内にしてください。'}), 400
 
-        # 長さ制限（計算量が線形に増えるためRenderで落ちやすい）
-        # 目安: original<=60秒, sample<=20秒
+        # 長さ制限（原曲5分、サンプル1分まで許可）
         try:
             original_sec = _wav_duration_seconds(original_path)
             sample_sec = _wav_duration_seconds(sample_path)
@@ -152,10 +151,10 @@ def detect():
             original_sec = None
             sample_sec = None
 
-        if original_sec is not None and original_sec > 60:
-            return jsonify({'error': f'原曲WAVが長すぎます（{original_sec:.1f}秒）。Render版は60秒以内にしてください。'}), 400
-        if sample_sec is not None and sample_sec > 20:
-            return jsonify({'error': f'サンプルWAVが長すぎます（{sample_sec:.1f}秒）。Render版は20秒以内にしてください。'}), 400
+        if original_sec is not None and original_sec > 300:
+            return jsonify({'error': f'原曲WAVが長すぎます（{original_sec:.1f}秒）。5分以内にしてください。'}), 400
+        if sample_sec is not None and sample_sec > 60:
+            return jsonify({'error': f'サンプルWAVが長すぎます（{sample_sec:.1f}秒）。1分以内にしてください。'}), 400
         
         print(f"[detect] Processing files: original={original_size/1024:.1f}KB, sample={sample_size/1024:.1f}KB", file=sys.stderr)
 
