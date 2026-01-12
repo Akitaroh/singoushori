@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.signal_processing import SamplingDetector
 
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 最大50MB
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 最大10MB（メモリ節約）
 
 # アップロードフォルダ
 UPLOAD_FOLDER = tempfile.mkdtemp()
@@ -28,7 +28,8 @@ detector = None
 def get_detector():
     global detector
     if detector is None:
-        detector = SamplingDetector()
+        # メモリ節約のため低いサンプリングレートを使用
+        detector = SamplingDetector(sr=16000, n_fft=1024, hop_length=256)
     return detector
 
 
@@ -115,12 +116,19 @@ def detect():
         original_file.save(original_path)
         sample_file.save(sample_path)
         
-        # ファイルサイズ確認
+        # ファイルサイズ確認（メモリ節約のため厳しめに）
         original_size = os.path.getsize(original_path)
         sample_size = os.path.getsize(sample_path)
         
         if original_size == 0 or sample_size == 0:
             return jsonify({'error': 'アップロードされたファイルが空です'}), 400
+        
+        # 合計10MB以上は拒否（Render無料枠のメモリ制限対策）
+        total_size_mb = (original_size + sample_size) / (1024 * 1024)
+        if total_size_mb > 10:
+            return jsonify({'error': f'ファイルサイズが大きすぎます（合計{total_size_mb:.1f}MB）。10MB以内にしてください。短いWAVファイルを使用するか、サンプリングレートを下げてください。'}), 400
+        
+        print(f"[detect] Processing files: original={original_size/1024:.1f}KB, sample={sample_size/1024:.1f}KB", file=sys.stderr)
 
         # 検出実行
         det = get_detector()
